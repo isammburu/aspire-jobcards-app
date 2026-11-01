@@ -12,6 +12,7 @@ data class RegCandidate(val raw: String, val value: String, val score: Float, va
  */
 object RegistrationDetector {
     private data class Fmt(val slots: String, val split: List<Int>, val needsLabel: Boolean, val weight: Float)
+
     /** Most specific first: when two formats read the same characters, the earlier one decides the display. Source: NTSA Registration Plates Rules / 2026 plate guide. */
     private val formats = listOf(
         Fmt("ktcDDDDD", listOf(3), false, 1f),     // KTC 12345 tractors
@@ -29,10 +30,12 @@ object RegistrationDetector {
         Fmt("kLLDDD", listOf(3), true, 0.9f),      // legacy KAB 123
         Fmt("zLDDDD", listOf(2), true, 0.9f),      // trailers ZF 1234
         Fmt("LLDDDL", listOf(2), true, 0.85f))     // other 2-letter series, label required
+
     // Military (Kenya Defence Forces): prefix KA = Army, KAF = Air Force, KN = Navy, followed by a number. The prefixes are
     // confirmed by published Kenyan plate guides; the number length is not, so any 1-5 digits are accepted and a single
     // reading stays at MEDIUM confidence at most (weight 0.85), so a person checks it before filing.
     private class Special(val rx: Regex, val free: Boolean, val weight: Float = 0.85f)
+
     // Special-purpose plates written with separators; matched on the line text, grouped with single spaces.
     private val specials = listOf(
         Special(Regex("""\b(\d{1,3})\s?[- ]?(CD|CC|DC)\s?[- ]?(\d{1,3})(?:\s?[- ]?([A-Z]{1,2}))?\b"""), false),   // 5 CD 18 K, 029 CD 123 AK
@@ -45,15 +48,19 @@ object RegistrationDetector {
         Special(Regex("""\b(\d{2})\s?(CG)(?:\s?(\d{1,4}))?\b"""), false),                                         // 47 CG county government
         Special(Regex("""\b(GVN)\s?(\d{3})\b"""), true),                                                           // GVN 047 governors
         Special(Regex("""\b(SNA|SSN|CJ)\s?(\d{1,3})\b"""), false))                                                // SNA 1, SSN 001, CJ 1
+
     private fun stripLabels(t: String): String {
         var r = t
         labels.sortedByDescending { it.length }.forEach { r = r.replace(Regex("(?<![A-Z0-9])" + Regex.escape(it) + "(?![A-Z])"), " ") }
         return r
     }
+
     private val toLetter = mapOf('0' to 'O', '1' to 'I', '5' to 'S', '8' to 'B', '2' to 'Z', '6' to 'G', '4' to 'A')
     private val toDigit = mapOf('O' to '0', 'Q' to '0', 'D' to '0', 'I' to '1', 'L' to '1', 'S' to '5', 'B' to '8', 'Z' to '2', 'G' to '6')
     private val labels = listOf("REGISTRATION", "REG NO", "REG.", "REG:", "VEHICLE REG", "CAR REG", "NUMBER PLATE", "PLATE", "REG")
     private val vehicleCtx = listOf("CHASSIS", "ENGINE", "MODEL", "COLOUR", "COLOR", "VEHICLE", "MAKE")
+
+    private fun normalize(value: String): String = value.replace(" ", "").uppercase()
 
     private fun validPlateText(raw: String): Boolean {
         val cleaned = raw.filter { it.isLetterOrDigit() }
@@ -108,13 +115,25 @@ object RegistrationDetector {
                 if (!validPlateText(text)) return@forEach
                 here += RegCandidate(m.value, text, score(sp.weight, if (whole) 1f else 0.6f), false)
             }
+
             // drop shorter matches sitting inside a longer one (e.g. MDA123A inside KMDA123A)
-            val compact = { c: RegCandidate -> c.value.replace(" ", "") }
-            val firstSeen = here.distinctBy { compact(it) }   // same characters from two formats: keep the more specific reading
-            out += firstSeen.filterNot { c -> firstSeen.any { d -> compact(d).length > compact(c).length && compact(d).contains(compact(c)) } }
+            val compact = { c: RegCandidate -> normalize(c.value) }
+            val firstSeen = here.distinctBy { compact(it) }
+            val filtered = firstSeen.filterNot { c ->
+                firstSeen.any { d ->
+                    compact(d).length > compact(c).length && compact(d).contains(compact(c))
+                }
+            }
+            out += filtered
         }
+
         if (out.isEmpty()) out += unknownFormat(lines)
+
         return merge(listOf(out))
+            .sortedWith(
+                compareByDescending<RegCandidate> { it.score }
+                    .thenByDescending { normalize(it.value).length }
+            )
     }
 
     /** Future-proofing: an unrecognised series sitting right beside a Registration label is offered as a low-confidence suggestion. */
@@ -129,9 +148,16 @@ object RegistrationDetector {
 
     /** Combine candidates from several OCR passes; agreement between passes raises confidence. */
     fun merge(passes: List<List<RegCandidate>>): List<RegCandidate> =
-        passes.flatten().groupBy { it.value }.map { (v, g) ->
-            RegCandidate(g.first().raw, v, (g.maxOf { it.score } + 0.08f * (passes.count { p -> p.any { it.value == v } } - 1).coerceAtLeast(0) + 0.03f * (g.size - 1).coerceAtMost(2)).coerceAtMost(1f)).sortedByDescending { it.score }
-        }
+        passes.flatten()
+            .groupBy { normalize(it.value) }
+            .map { (_, g) ->
+                val best = g.maxByOrNull { it.score } ?: g.first()
+                RegCandidate(best.raw, best.value, best.score, best.corrected)
+            }
+            .sortedWith(
+                compareByDescending<RegCandidate> { it.score }
+                    .thenByDescending { normalize(it.value).length }
+            )
 
     private fun near(a: OcrLine, b: OcrLine, k: Float) =
         kotlin.math.abs(a.box.centerY() - b.box.centerY()) < b.box.height() * k
