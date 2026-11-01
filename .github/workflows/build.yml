@@ -11,6 +11,9 @@ jobs:
         with: { distribution: temurin, java-version: 17 }
       - uses: gradle/actions/setup-gradle@v4
         with: { gradle-version: 8.10.2 }
+      - name: Restore signing key
+        run: echo "$KEYSTORE_B64" | base64 -d > app/aspire-debug.keystore
+        env: { KEYSTORE_B64: "${{ secrets.KEYSTORE_B64 }}" }
       - name: Run tests
         run: gradle :app:testDebugUnitTest
       - name: Build APK
