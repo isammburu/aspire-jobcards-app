@@ -1,6 +1,5 @@
 package com.aspirelending.jobcards.ui
 
-import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -15,14 +14,23 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.dp
+import com.aspirelending.jobcards.core.DocumentCleaner
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.aspirelending.jobcards.Draft
 import com.aspirelending.jobcards.core.RegistrationDetector
 import com.aspirelending.jobcards.core.Tier
 
 @Composable
-fun ReviewScreen(d: Draft, remaining: Int, onConfirm: (String) -> Unit, onDiscard: () -> Unit) {
+fun ReviewScreen(d: Draft, remaining: Int, onConfirm: (String) -> Unit, onDiscard: () -> Unit, onUseOriginal: () -> Unit) {
     var reg by remember(d.id) { mutableStateOf(d.best?.value ?: "") }
-    val bmp = remember(d.id) { BitmapFactory.decodeFile(d.path, BitmapFactory.Options().apply { inSampleSize = 2 })?.asImageBitmap() }
+    // photos that went through our own clean-up keep the untouched original, so the two can be compared
+    val orig = d.original
+    var showOrig by remember(d.id) { mutableStateOf(false) }
+    val shown = if (showOrig && orig != null) orig else d.path
+    val bmp by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, shown) {
+        value = withContext(Dispatchers.IO) { DocumentCleaner.loadForDisplay(shown, 1600)?.asImageBitmap() }
+    }
     val (msg, ok) = when (d.tier) {
         Tier.HIGH -> "Registration detected: High confidence" to true
         Tier.MEDIUM -> "We detected ${d.best?.value}. Please check it." to false
@@ -34,7 +42,12 @@ fun ReviewScreen(d: Draft, remaining: Int, onConfirm: (String) -> Unit, onDiscar
         if (!d.jobCardLike) Text("! This doesn't look like a job card. You can still save it.", style = MaterialTheme.typography.bodySmall)
         if (d.sharpness < com.aspirelending.jobcards.core.Quality.BLUR_THRESHOLD)
             Text("! Image looks blurry, so the registration may be misread. Retake if it looks wrong.", style = MaterialTheme.typography.bodySmall)
-        bmp?.let { Image(it, "Processed job card", Modifier.fillMaxWidth().heightIn(max = 380.dp)) }
+        if (orig != null) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(!showOrig, { showOrig = false }, { Text("Processed") })
+            FilterChip(showOrig, { showOrig = true }, { Text("Original") })
+        }
+        bmp?.let { Image(it, if (showOrig) "Original photo" else "Processed job card", Modifier.fillMaxWidth().heightIn(max = 380.dp)) }
+        if (orig != null && d.source != "Reprocess") TextButton(onUseOriginal, Modifier.fillMaxWidth()) { Text("Crop looks wrong? Use the original photo") }
         Text((if (ok) "✓ " else "! ") + msg, style = MaterialTheme.typography.bodyMedium)
         OutlinedTextField(reg, { reg = it.uppercase() }, label = { Text("Vehicle registration") }, singleLine = true,
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Characters), modifier = Modifier.fillMaxWidth())

@@ -23,7 +23,7 @@ class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
     private val launcher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
         GmsDocumentScanningResult.fromActivityResultIntent(r.data)?.pages?.map { it.imageUri }
-            ?.takeIf { it.isNotEmpty() }?.let { vm.process(it, "Camera/Scanner") }
+            ?.takeIf { it.isNotEmpty() }?.let { vm.process(it, "Camera/Scanner") }   // keep in step with SCANNER in AppViewModel
     }
 
     private val authLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { r ->
@@ -69,7 +69,7 @@ class MainActivity : ComponentActivity() {
                     if (s) SplashScreen(userName) { splash = false }
                     else if (!onboarded) Onboarding(::connectDrive) { Prefs.setOnboarded(this@MainActivity, true) }
                     else drafts.firstOrNull()?.let { d ->
-                        ReviewScreen(d, drafts.size, { vm.confirm(d, it) }, { vm.discard(d) })
+                        ReviewScreen(d, drafts.size, { vm.confirm(d, it) }, { vm.discard(d) }, { vm.useOriginal(d) })
                     } ?: Shell(userName, vm, ::scan, ::connectDrive)
                 }
             }

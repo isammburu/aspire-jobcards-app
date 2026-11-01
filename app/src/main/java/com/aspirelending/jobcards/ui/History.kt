@@ -19,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.aspirelending.jobcards.AppViewModel
+import com.aspirelending.jobcards.core.DocumentCleaner
 import com.aspirelending.jobcards.core.RegistrationDetector
 import com.aspirelending.jobcards.data.CardStatus
 import com.aspirelending.jobcards.data.JobCardEntity
@@ -66,6 +67,9 @@ private fun Thumb(path: String) {
 private fun CardActions(c: JobCardEntity, vm: AppViewModel, close: () -> Unit) {
     val ctx = LocalContext.current
     var editing by remember { mutableStateOf(false) }
+    var comparing by remember { mutableStateOf(false) }
+    val hasOriginal = remember(c.id) { DocumentCleaner.originalFor(c.filePath).exists() }
+    if (comparing) CompareDialog(c) { comparing = false }
     if (editing) {
         var t by remember { mutableStateOf(c.registration) }
         AlertDialog(onDismissRequest = { editing = false }, title = { Text("Edit registration") },
@@ -78,6 +82,8 @@ private fun CardActions(c: JobCardEntity, vm: AppViewModel, close: () -> Unit) {
             Column {
                 TextButton({ editing = true }) { Text("Edit registration") }
                 TextButton({ vm.reprocess(c); close() }) { Text("Reprocess") }
+                if (hasOriginal) TextButton({ comparing = true }) { Text("Original vs processed") }
+                else Text("Original not kept: this card was captured with Google's scanner, which returns only the cleaned image.", style = MaterialTheme.typography.bodySmall)
                 TextButton({
                     val dir = File(ctx.cacheDir, "share").apply { mkdirs() }
                     val out = File(dir, RegistrationDetector.sanitizeFilename(c.registration)); File(c.filePath).copyTo(out, true)
@@ -88,6 +94,25 @@ private fun CardActions(c: JobCardEntity, vm: AppViewModel, close: () -> Unit) {
                 c.driveFileId?.let { id -> TextButton({ ctx.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://drive.google.com/file/d/$id/view"))) }) { Text("Open in Drive") } }
                 if (c.status == CardStatus.UPLOAD_FAILED || c.status == CardStatus.PENDING_UPLOAD) TextButton({ vm.uploadNow(); close() }) { Text("Retry upload") }
                 if (c.status == CardStatus.UPLOADED) TextButton({ vm.deleteLocal(c); close() }) { Text("Remove from this phone") }
+            }
+        })
+}
+
+@Composable
+private fun CompareDialog(c: JobCardEntity, close: () -> Unit) {
+    var showOrig by remember { mutableStateOf(false) }
+    val path = if (showOrig) DocumentCleaner.originalFor(c.filePath).path else c.filePath
+    val bmp by produceState<androidx.compose.ui.graphics.ImageBitmap?>(null, path) {
+        value = withContext(Dispatchers.IO) { DocumentCleaner.loadForDisplay(path, 1600)?.asImageBitmap() }
+    }
+    AlertDialog(onDismissRequest = close, title = { Text(c.registration) }, confirmButton = { TextButton(close) { Text("Close") } },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(!showOrig, { showOrig = false }, { Text("Processed") })
+                    FilterChip(showOrig, { showOrig = true }, { Text("Original") })
+                }
+                bmp?.let { Image(it, if (showOrig) "Original photo" else "Processed job card", Modifier.fillMaxWidth().heightIn(max = 420.dp)) }
             }
         })
 }

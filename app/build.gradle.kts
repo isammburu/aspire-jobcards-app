@@ -11,6 +11,9 @@ android {
         applicationId = "com.aspirelending.jobcards"
         minSdk = 26; targetSdk = 35; versionCode = 1; versionName = "0.1.0"
     }
+    // Fixed signing key so every build has the same SHA-1 (Google Drive sign-in is tied to it). Keep the repository private.
+    signingConfigs { create("aspire") { storeFile = file("aspire-debug.keystore"); storePassword = "android"; keyAlias = "aspire"; keyPassword = "android" } }
+    buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("aspire") } }
     buildFeatures { compose = true }
     testOptions { unitTests.isReturnDefaultValues = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }

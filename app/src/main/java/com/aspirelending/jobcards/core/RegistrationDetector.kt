@@ -29,6 +29,9 @@ object RegistrationDetector {
         Fmt("kLLDDD", listOf(3), true, 0.9f),      // legacy KAB 123
         Fmt("zLDDDD", listOf(2), true, 0.9f),      // trailers ZF 1234
         Fmt("LLDDDL", listOf(2), true, 0.85f))     // other 2-letter series, label required
+    // Military (Kenya Defence Forces): prefix KA = Army, KAF = Air Force, KN = Navy, followed by a number. The prefixes are
+    // confirmed by published Kenyan plate guides; the number length is not, so any 1-5 digits are accepted and a single
+    // reading stays at MEDIUM confidence at most (weight 0.85), so a person checks it before filing.
     private class Special(val rx: Regex, val free: Boolean, val weight: Float = 0.85f)
     // Special-purpose plates written with separators; matched on the line text, grouped with single spaces.
     private val specials = listOf(
@@ -36,11 +39,17 @@ object RegistrationDetector {
         Special(Regex("""\b(\d{1,3})\s?[- ]?(UN)\s?[- ]?(\d{1,3})(?:\s?[- ]?([A-Z]{1,2}))?\b"""), false),          // 029 UN 123 AK
         Special(Regex("""\b(UN|CD)\s?(\d{3})\b"""), false, 0.75f),                                                  // UN 001, UN 002
         Special(Regex("""\b(UNON)\s?(DG)\b"""), true),                                                              // UNON DG
-        Special(Regex("""\bKX\s?(\d{2})\s?([AB])\b"""), true),                                                     // KX 05 A / B
+        Special(Regex("""\b(KAF|KA|KN)\s?-?(\d{1,5})\b"""), false, 0.85f),                                      // KA 1234 army, KAF 123 air force, KN 123 navy
+        Special(Regex("""\b(KX)\s?(\d{2})\s?([AB])\b"""), true),                                                     // KX 05 A / B
         Special(Regex("""\b(\d{2})\s?(KCG)\s?(\d{2})\b"""), true),                                                // 00 KCG 00 coast guard
         Special(Regex("""\b(\d{2})\s?(CG)(?:\s?(\d{1,4}))?\b"""), false),                                         // 47 CG county government
         Special(Regex("""\b(GVN)\s?(\d{3})\b"""), true),                                                           // GVN 047 governors
         Special(Regex("""\b(SNA|SSN|CJ)\s?(\d{1,3})\b"""), false))                                                // SNA 1, SSN 001, CJ 1
+    private fun stripLabels(t: String): String {
+        var r = t
+        labels.sortedByDescending { it.length }.forEach { r = r.replace(Regex("(?<![A-Z0-9])" + Regex.escape(it) + "(?![A-Z])"), " ") }
+        return r
+    }
     private val toLetter = mapOf('0' to 'O', '1' to 'I', '5' to 'S', '8' to 'B', '2' to 'Z', '6' to 'G', '4' to 'A')
     private val toDigit = mapOf('O' to '0', 'Q' to '0', 'D' to '0', 'I' to '1', 'L' to '1', 'S' to '5', 'B' to '8', 'Z' to '2', 'G' to '6')
     private val labels = listOf("REGISTRATION", "REG NO", "REG.", "REG:", "VEHICLE REG", "CAR REG", "NUMBER PLATE", "PLATE", "REG")
@@ -51,6 +60,7 @@ object RegistrationDetector {
         for (ln in lines) {
             val up = ln.text.uppercase()
             val s = up.filter { it.isLetterOrDigit() }
+            val sFmt = stripLabels(up).filter { it.isLetterOrDigit() }   // format windows are cut from the text without label words
             val label = labelScore(ln, lines)
             val ctx = if (lines.any { l -> vehicleCtx.any { l.text.uppercase().contains(it) } && near(l, ln, 4f) }) 1f else 0f
             fun score(pattern: Float, tight: Float) = 0.35f * pattern + 0.3f * label + 0.15f * ln.confidence.coerceIn(0f, 1f) + 0.1f * ctx + 0.1f * tight
@@ -59,21 +69,22 @@ object RegistrationDetector {
             for (f in formats) {
                 val n = f.slots.length
                 if (f.needsLabel && label < 0.7f) continue
-                for (i in 0..(s.length - n)) {
-                    val w = s.substring(i, i + n); var fixes = 0
+                for (i in 0..(sFmt.length - n)) {
+                    val w = sFmt.substring(i, i + n); var fixes = 0
                     val v = StringBuilder()
                     for (k in 0 until n) {
                         val ch = w[k]; val sl = f.slots[k]
                         val r = when {
-                            sl.isLowerCase() -> if (ch == sl.uppercaseChar()) ch else if (toLetter[ch] == sl.uppercaseChar()) { fixes++; sl.uppercaseChar() } else null
+                            sl.isLowerCase() -> if (ch == sl.uppercaseChar()) ch else if (label >= 0.7f && toLetter[ch] == sl.uppercaseChar()) { fixes++; sl.uppercaseChar() } else null
                             sl == 'L' -> if (ch.isLetter()) ch else toLetter[ch]?.also { fixes++ }
                             else -> if (ch.isDigit()) ch else toDigit[ch]?.also { fixes++ }
                         } ?: break
                         v.append(r)
                     }
                     if (v.length < n || fixes > 2) continue
+                    if (f.slots == "kLLDDD" && v.startsWith("KAF")) continue   // KAF is never issued to civilians; read as a military plate below
                     var weight = f.weight
-                    if (f.slots == "LLLDDDL" && v[0] !in "KGCZ") weight *= 0.85f
+                    if (f.slots == "LLLDDDL" && v[0] !in "KGCZ") { if (fixes > 0) continue; weight *= 0.85f }   // "DATE 12/10" is not a corrected plate
                     val pattern = (if (fixes == 0) 1f else 0.75f - 0.1f * (fixes - 1)) * weight
                     val tight = if (s.length == n) 1f else if (label == 1f) 0.9f else 0.6f
                     var d = 0; val text = buildString { f.split.forEach { p -> append(v.substring(d, p)).append(' '); d = p }; append(v.substring(d)) }

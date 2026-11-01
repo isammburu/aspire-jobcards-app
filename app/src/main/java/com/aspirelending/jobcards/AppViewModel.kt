@@ -18,10 +18,13 @@ import java.util.UUID
 
 data class Draft(val id: String, val path: String, val candidates: List<RegCandidate>, val source: String,
                  val fields: JobFields = JobFields(), val jobCardLike: Boolean = true, val sharpness: Float = 999f,
-                 val hash: String? = null, val alreadyFiled: String? = null) {
+                 val hash: String? = null, val alreadyFiled: String? = null,
+                 val original: String? = null) {
     val best get() = candidates.firstOrNull()
     val tier get() = best?.let { RegistrationDetector.tier(it.score) } ?: Tier.LOW
 }
+
+private const val SCANNER = "Camera/Scanner"   // Google's scanner has already cropped and cleaned these
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val app = app
@@ -43,7 +46,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             }.getOrElse { if (it is DriveHttpException && it.code in listOf(403, 404)) "This Google account can't access the configured folder." else "Couldn't reach Google Drive. Check your internet." }
         }
     }
-    fun deleteLocal(c: JobCardEntity) = viewModelScope.launch { File(c.filePath).delete(); dao.delete(c.id) }
+    fun deleteLocal(c: JobCardEntity) = viewModelScope.launch { File(c.filePath).delete(); DocumentCleaner.originalFor(c.filePath).delete(); dao.delete(c.id) }
     val duplicates = dao.duplicates().stateIn(viewModelScope, SharingStarted.Lazily, emptyList())
     val failed = dao.count(CardStatus.UPLOAD_FAILED).stateIn(viewModelScope, SharingStarted.Lazily, 0)
     private val dir = File(app.filesDir, "cards").apply { mkdirs() }
@@ -59,20 +62,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     val notice = MutableStateFlow<String?>(null)
     val lastProcessMs = MutableStateFlow<Long?>(null)
 
-    /** Scanner pages and shared images both end up here; offline, sequential to keep memory low. */
+    /**
+     * Scanner pages and shared images both end up here; offline, sequential to keep memory low.
+     * Scanner pages are already cropped and cleaned by Google's scanner. Anything else (shared from WhatsApp, Gallery...)
+     * is kept untouched as "<id>.orig.jpg" and goes through our own crop / rotate / clean-up to become "<id>.jpeg".
+     */
     fun process(uris: List<Uri>, source: String) = viewModelScope.launch {
         val ctx = getApplication<Application>()
         processing.value = 0 to uris.size
         var skipped = 0
         uris.forEachIndexed { i, u ->
             val id = UUID.randomUUID().toString(); val f = File(dir, "$id.jpeg")
-            // the original is stored first, so nothing is lost if the process dies during OCR
-            val ok = runCatching { withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(u)!!.use { a -> f.outputStream().use { a.copyTo(it) } }; readable(f) } }.getOrDefault(false)
-            if (ok) analyze(f, id, source) else { f.delete(); skipped++ }
+            val own = source != SCANNER
+            val raw = if (own) File(dir, "$id.orig.jpg") else f
+            // the original is stored first, so nothing is lost if the process dies during clean-up or OCR
+            val ok = runCatching { withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(u)!!.use { a -> raw.outputStream().use { a.copyTo(it) } }; readable(raw) } }.getOrDefault(false)
+            if (!ok) { raw.delete(); skipped++ }
+            else { if (own) prepare(raw, f); analyze(f, id, source) }
             processing.value = (i + 1) to uris.size
         }
         processing.value = null
         if (skipped > 0) notice.value = "$skipped photo${if (skipped > 1) "s" else ""} couldn't be read and ${if (skipped > 1) "were" else "was"} skipped."
+    }
+
+    /** Build the filed JPEG from an untouched photo. If clean-up fails, the photo itself is filed and the pointless copy is dropped. */
+    private suspend fun prepare(raw: File, out: File) {
+        val res = runCatching { DocumentCleaner.clean(raw, out) }.getOrNull()
+        if (res == null) {
+            out.delete()
+            val ok = runCatching { DocumentCleaner.exportOriginal(raw, out) }.getOrDefault(false)
+            if (!ok) { out.delete(); runCatching { raw.copyTo(out, true) } }
+            if (out.exists()) raw.delete()
+        }
     }
 
     private fun sha256(f: File): String {
@@ -95,18 +116,25 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val cands = runCatching { RegistrationDetector.merge(listOf(RegistrationDetector.detect(lines), RegistrationDetector.detect(lines2))) }.getOrDefault(emptyList())
         val fields = runCatching { FieldExtractor.extract(lines.ifEmpty { lines2 }) }.getOrDefault(JobFields())
         val sharp = runCatching { Quality.sharpness(f.path) }.getOrDefault(999f)
-        val hash = runCatching { sha256(f) }.getOrNull()
+        val orig = DocumentCleaner.originalFor(f.path).takeIf { it.exists() }
+        val hash = runCatching { sha256(orig ?: f) }.getOrNull()   // hash the photo as received, so the same photo sent twice is caught
         val dupe = hash?.let { h -> runCatching { dao.byHash(h) }.getOrNull() }?.takeIf { it.id != id }?.registration
-        drafts.update { it + Draft(id, f.path, cands, source, fields, (lines + lines2).isEmpty() || FieldExtractor.looksLikeJobCard(lines + lines2), sharp, hash, dupe) }
+        drafts.update { it + Draft(id, f.path, cands, source, fields, (lines + lines2).isEmpty() || FieldExtractor.looksLikeJobCard(lines + lines2), sharp, hash, dupe, orig?.path) }
         lastProcessMs.value = System.currentTimeMillis() - t0
     }
 
     /** If Android killed the app between scanning and confirming, unreviewed photos are still on disk: bring them back to review. */
     private fun recoverOrphans() {
         val files = dir.listFiles { x -> x.extension == "jpeg" }?.toList().orEmpty()   // listed before anything new is written
-        if (files.isEmpty()) return
+        // shared photos that were stored but never finished clean-up (the process died in between)
+        val unfinished = dir.listFiles { x -> x.name.endsWith(".orig.jpg") }?.filter { !File(dir, it.name.removeSuffix(".orig.jpg") + ".jpeg").exists() }.orEmpty()
+        if (files.isEmpty() && unfinished.isEmpty()) return
         viewModelScope.launch {
             val known = dao.ids().toSet()
+            unfinished.filter { it.name.removeSuffix(".orig.jpg") !in known && readable(it) }.sortedBy { it.lastModified() }.forEach {
+                val id = it.name.removeSuffix(".orig.jpg"); val out = File(dir, "$id.jpeg")
+                prepare(it, out); if (out.exists()) analyze(out, id, "Recovered")
+            }
             files.filter { it.nameWithoutExtension !in known && readable(it) }.sortedBy { it.lastModified() }
                 .forEach { analyze(it, it.nameWithoutExtension, "Recovered") }
         }
@@ -144,5 +172,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         if (action != "cancel") UploadWorker.enqueue(app)
     }
-    fun discard(d: Draft) { viewModelScope.launch { if (dao.byId(d.id) == null) File(d.path).delete(); drafts.update { it - d } } }
+    fun discard(d: Draft) { viewModelScope.launch { if (dao.byId(d.id) == null) { File(d.path).delete(); d.original?.let { File(it).delete() } }; drafts.update { it - d } } }
+    /** The clean-up made it worse (e.g. a wrong crop): file the photo as received instead (camera rotation applied, otherwise untouched). */
+    fun useOriginal(d: Draft) = viewModelScope.launch {
+        val o = d.original?.let { File(it) } ?: return@launch
+        val tmp = File(dir, "${d.id}.tmp")
+        if (DocumentCleaner.exportOriginal(o, tmp) && tmp.length() > 0) {
+            tmp.copyTo(File(d.path), true); tmp.delete(); o.delete()
+            drafts.update { l -> l.map { if (it.id == d.id) it.copy(original = null) else it } }
+        } else tmp.delete()
+    }
 }
