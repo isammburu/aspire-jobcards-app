@@ -15,6 +15,22 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
 
+data class Draft(
+    val id: String,
+    val path: String,
+    val candidates: List<RegCandidate>,
+    val source: String,
+    val fields: JobFields = JobFields(),
+    val jobCardLike: Boolean = true,
+    val sharpness: Float = 999f,
+    val hash: String? = null,
+    val alreadyFiled: String? = null,
+    val original: String? = null,
+) {
+    val best get() = candidates.firstOrNull()
+    val tier get() = best?.let { RegistrationDetector.tier(it.score) } ?: Tier.LOW
+}
+
 private const val SCANNER = "Camera/Scanner"
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
