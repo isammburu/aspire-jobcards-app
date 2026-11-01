@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.Aspire" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#02150A</item>
+        <item name="android:statusBarColor">#02150A</item>
+        <item name="android:navigationBarColor">#02150A</item>
+    </style>
+</resources>
