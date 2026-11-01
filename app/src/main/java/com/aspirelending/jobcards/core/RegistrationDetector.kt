@@ -60,7 +60,8 @@ object RegistrationDetector {
         if (cleaned.length < 4) return false
         val letters = cleaned.count { it.isLetter() }
         val digits = cleaned.count { it.isDigit() }
-        return letters >= 2 && digits >= 1 && letters + digits <= 9
+        // Some valid Kenyan special-purpose plates exceed the normal 9-character limit, e.g. "029 CD 123 AK".
+        return letters >= 2 && digits >= 1 && letters + digits <= 10
     }
 
     fun detect(lines: List<OcrLine>): List<RegCandidate> {
@@ -129,8 +130,8 @@ object RegistrationDetector {
     /** Combine candidates from several OCR passes; agreement between passes raises confidence. */
     fun merge(passes: List<List<RegCandidate>>): List<RegCandidate> =
         passes.flatten().groupBy { it.value }.map { (v, g) ->
-            RegCandidate(g.first().raw, v, (g.maxOf { it.score } + 0.08f * (passes.count { p -> p.any { it.value == v } } - 1).coerceAtLeast(0) + 0.03f * (g.size - 1).coerceAtMost(2)).coerceAtMost(1f), g.any { it.corrected })
-        }.sortedByDescending { it.score }
+            RegCandidate(g.first().raw, v, (g.maxOf { it.score } + 0.08f * (passes.count { p -> p.any { it.value == v } } - 1).coerceAtLeast(0) + 0.03f * (g.size - 1).coerceAtMost(2)).coerceAtMost(1f)).sortedByDescending { it.score }
+        }
 
     private fun near(a: OcrLine, b: OcrLine, k: Float) =
         kotlin.math.abs(a.box.centerY() - b.box.centerY()) < b.box.height() * k
