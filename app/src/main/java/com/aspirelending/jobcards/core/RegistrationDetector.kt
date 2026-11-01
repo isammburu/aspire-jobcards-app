@@ -55,6 +55,14 @@ object RegistrationDetector {
     private val labels = listOf("REGISTRATION", "REG NO", "REG.", "REG:", "VEHICLE REG", "CAR REG", "NUMBER PLATE", "PLATE", "REG")
     private val vehicleCtx = listOf("CHASSIS", "ENGINE", "MODEL", "COLOUR", "COLOR", "VEHICLE", "MAKE")
 
+    private fun validPlateText(raw: String): Boolean {
+        val cleaned = raw.filter { it.isLetterOrDigit() }
+        if (cleaned.length < 4) return false
+        val letters = cleaned.count { it.isLetter() }
+        val digits = cleaned.count { it.isDigit() }
+        return letters >= 2 && digits >= 1 && letters + digits <= 9
+    }
+
     fun detect(lines: List<OcrLine>): List<RegCandidate> {
         val out = mutableListOf<RegCandidate>()
         for (ln in lines) {
@@ -88,6 +96,7 @@ object RegistrationDetector {
                     val pattern = (if (fixes == 0) 1f else 0.75f - 0.1f * (fixes - 1)) * weight
                     val tight = if (s.length == n) 1f else if (label == 1f) 0.9f else 0.6f
                     var d = 0; val text = buildString { f.split.forEach { p -> append(v.substring(d, p)).append(' '); d = p }; append(v.substring(d)) }
+                    if (!validPlateText(text)) continue
                     here += RegCandidate(w, text, score(pattern, tight), fixes > 0)
                 }
             }
@@ -95,6 +104,7 @@ object RegistrationDetector {
                 val whole = m.value.filter { it.isLetterOrDigit() } == s
                 if (!sp.free && !whole && label < 0.7f) return@forEach
                 val text = m.groupValues.drop(1).filter { it.isNotEmpty() }.joinToString(" ")
+                if (!validPlateText(text)) return@forEach
                 here += RegCandidate(m.value, text, score(sp.weight, if (whole) 1f else 0.6f), false)
             }
             // drop shorter matches sitting inside a longer one (e.g. MDA123A inside KMDA123A)
@@ -111,7 +121,9 @@ object RegistrationDetector {
         if (labelScore(ln, lines) < 0.85f) return@mapNotNull null
         var t = ln.text.uppercase(); labels.sortedByDescending { it.length }.forEach { t = t.replace(it, " ") }
         val m = Regex("""\b([A-Z]{2,4})\s?-?(\d{1,4})\s?([A-Z])?\b""").find(t) ?: return@mapNotNull null
-        RegCandidate(m.value, m.groupValues.drop(1).filter { it.isNotEmpty() }.joinToString(" "), 0.45f + 0.1f * ln.confidence.coerceIn(0f, 1f), false)
+        val text = m.groupValues.drop(1).filter { it.isNotEmpty() }.joinToString(" ")
+        if (!validPlateText(text)) return@mapNotNull null
+        RegCandidate(m.value, text, 0.45f + 0.1f * ln.confidence.coerceIn(0f, 1f), false)
     }
 
     /** Combine candidates from several OCR passes; agreement between passes raises confidence. */
