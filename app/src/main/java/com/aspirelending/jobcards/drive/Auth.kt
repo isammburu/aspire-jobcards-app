@@ -10,7 +10,9 @@ import com.google.android.gms.common.api.Scope
 import com.google.android.gms.tasks.Task
 
 object Auth {
-    private val req = AuthorizationRequest.builder().setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/drive"))).build()
+    private val req = AuthorizationRequest.builder()
+        .setRequestedScopes(listOf(Scope("https://www.googleapis.com/auth/drive")))
+        .build()
 
     fun authorize(c: Context): Task<AuthorizationResult> {
         val availability = GoogleApiAvailability.getInstance().isGooglePlayServicesAvailable(c)
