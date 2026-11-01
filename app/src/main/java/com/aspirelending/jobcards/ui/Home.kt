@@ -2,6 +2,8 @@ package com.aspirelending.jobcards.ui
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -59,8 +61,8 @@ fun HomeScreen(userName: String, vm: com.aspirelending.jobcards.AppViewModel, on
                 Text("Scan your first job card. It is cleaned, named by registration and filed.", style = MaterialTheme.typography.bodySmall)
             } else {
                 Text("Recent", style = MaterialTheme.typography.titleSmall)
-                androidx.compose.foundation.lazy.LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    androidx.compose.foundation.lazy.items(recent.take(20)) { c ->
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(recent.take(20)) { c ->
                         val fmt = java.text.SimpleDateFormat("d MMM, HH:mm", java.util.Locale.getDefault())
                         ListItem(headlineContent = { Text(c.registration, fontWeight = FontWeight.SemiBold) },
                             supportingContent = { Text((c.error ?: c.status.name.replace('_', ' ').lowercase().replaceFirstChar { it.uppercase() }) + " · " + fmt.format(c.createdAt)) })
